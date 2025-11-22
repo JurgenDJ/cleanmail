@@ -11,3 +11,4 @@ In this stage, there are no fixes are improvements yet.
 - Implemented a security recomendation to validate email address, preventing undesired injection of ALL.
 - Changed the system to work with any Imap server, not limited to yahoo or google
 - Added ability to save server/mailaddress and pwd
+- add feature to prune folder (delete messages older than ...)

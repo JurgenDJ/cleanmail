@@ -1,6 +1,7 @@
 import email
 import imaplib
 import re
+from datetime import datetime, timedelta
 from email.utils import parseaddr
 from bs4 import BeautifulSoup
 from typing import Optional, List, Any
@@ -82,6 +83,70 @@ class MailAnalyzer:
         mail = imaplib.IMAP4_SSL(self.mail_server)
         mail.login(self.email_address, self.mail_password)
         return mail
+
+    def get_all_folders(self) -> List[dict]:
+        """
+        Retrieve all folders with their printable names, raw names, and message counts.
+        
+        Returns:
+            List of dictionaries, each containing:
+            - 'printable_name': Human-readable folder name (str)
+            - 'raw_name': Folder name that can be used in delete_emails_older_than (str, unquoted)
+            - 'message_count': Number of messages in the folder (int)
+        
+        Raises:
+            Exception: If connection fails or folder listing fails
+        """
+        mail = self.connect()
+        
+        try:
+            result, folders = mail.list()
+            if result != "OK":
+                raise Exception("Could not list folders")
+            
+            folder_info_list = []
+            
+            for folder in folders:
+                # Decode the folder
+                decoded_folder = folder.decode()
+                
+                # Extract the folder name from the string
+                # The folder name is the part between the last "/" and the end
+                folder_name = decoded_folder.split(' "/" ')[-1].strip('"')
+                
+                # Extract the full path from the LIST response for raw_name
+                # Match the quoted mailbox name at the end
+                match = re.search(r'"([^"]+)"\s*$', decoded_folder)
+                if match:
+                    # Use the full path as raw_name (unquoted, matching delete_emails_older_than format)
+                    raw_name = match.group(1)
+                else:
+                    # Fallback: use folder_name
+                    raw_name = folder_name
+                
+                # Format folder name for SELECT: quote if it has spaces (matching delete_emails_older_than logic)
+                formatted_foldername = raw_name
+                if ' ' in raw_name:
+                    formatted_foldername = f'"{raw_name}"'
+                
+                # Select folder to get message count (readonly=True to avoid modifications)
+                status, data = mail.select(formatted_foldername, readonly=True)
+                if status == 'OK':
+                    message_count = int(data[0])
+                else:
+                    # If selection fails, set count to 0
+                    message_count = 0
+                
+                folder_info_list.append({
+                    'printable_name': folder_name,
+                    'raw_name': raw_name,
+                    'message_count': message_count
+                })
+            
+            return folder_info_list
+            
+        finally:
+            mail.logout()
 
     @staticmethod
     def chunk(array: List[Any], chunk_size: int) -> List[List[Any]]:
@@ -191,6 +256,93 @@ class MailAnalyzer:
         except Exception as e:
             return None
 
+    def _delete_message_uids(self, mail: imaplib.IMAP4_SSL, message_uids: List[bytes]) -> int:
+        """
+        Helper method to delete messages by their UIDs.
+        Moves messages to the bin folder and marks them as deleted.
+        
+        Args:
+            mail: Active IMAP connection
+            message_uids: List of message UIDs (bytes) to delete
+        
+        Returns:
+            The number of emails moved to the bin.
+        """
+        if not message_uids:
+            return 0
+        
+        # Process emails in small batches for better performance
+        # OVH's IMAP server works with quoted folder names and small batches
+        batch_size = 50
+        total_copied = 0
+        
+        for batch_start in range(0, len(message_uids), batch_size):
+            batch_uids = message_uids[batch_start:batch_start + batch_size]
+            batch_num = batch_start // batch_size + 1
+            total_batches = (len(message_uids) + batch_size - 1) // batch_size
+            
+            print(f"Processing batch {batch_num} of {total_batches} ({len(batch_uids)} emails)...")
+            
+            # Decode UIDs
+            uid_strings = [uid.decode() for uid in batch_uids]
+            uid_list = ','.join(uid_strings)
+            
+            # Batch fetch sequence numbers for all UIDs in this batch
+            result, data = mail.uid("FETCH", uid_list, "(UID)")
+            if result != "OK":
+                raise Exception(f"Failed to fetch sequence numbers for batch: {result}")
+            
+            # Parse sequence numbers from FETCH response
+            # Format: b'1 (UID 12345)', b'2 (UID 12346)', etc.
+            seq_nums = []
+            for item in data:
+                if isinstance(item, tuple):
+                    # Skip the data part, we only need the header
+                    continue
+                if isinstance(item, bytes):
+                    # Parse: b'1 (UID 12345)'
+                    parts = item.decode().split()
+                    if parts:
+                        seq_nums.append(parts[0])
+            
+            if len(seq_nums) != len(batch_uids):
+                raise Exception(f"Mismatch: got {len(seq_nums)} sequence numbers for {len(batch_uids)} UIDs")
+            
+            # Batch COPY: try copying all at once, fall back to individual if needed
+            seq_list = ','.join(seq_nums)
+            result, response = mail.copy(seq_list, self.bin_folder)
+            
+            if result != "OK":
+                # Fall back to individual copies if batch fails
+                print("Batch COPY failed, falling back to individual copies...")
+                for seq_num, uid in zip(seq_nums, uid_strings):
+                    result, response = mail.copy(seq_num, self.bin_folder)
+                    if result != "OK":
+                        raise Exception(f"Failed to copy email UID {uid} (seq {seq_num}) to {self.bin_folder}: {result} {response}")
+            
+            # Batch STORE: mark all as deleted at once
+            result, response = mail.uid("STORE", uid_list, '+FLAGS', '\\Deleted')
+            if result != "OK":
+                raise Exception(f"Failed to mark emails as deleted: {result} {response}")
+            
+            total_copied += len(batch_uids)
+            
+            # Expunge every 50 emails to keep memory usage down
+            if total_copied % 50 == 0:
+                try:
+                    mail.expunge()
+                except Exception as e:
+                    # If expunge fails, continue - we'll expunge at the end
+                    print(f"Warning: Expunge failed at {total_copied} emails: {e}")
+        
+        # Final expunge at the end
+        try:
+            mail.expunge()
+        except Exception as e:
+            print(f"Warning: Final expunge failed: {e}")
+        
+        return total_copied
+
     def delete_emails_from_sender(self, sender_email) -> int:
         """
         Delete emails from a specific sender by moving them to the bin folder.
@@ -209,93 +361,71 @@ class MailAnalyzer:
         sender_email = EmailValidator.validate_email_for_imap(sender_email)
         
         mail = self.connect()
-
-        mail.select("INBOX", readonly=False)
-        # Use UID SEARCH to get UIDs (which remain stable after deletions)
-        _, messages = mail.uid("SEARCH", None, f'FROM "{sender_email}"')
-        if not messages[0]:
-            mail.logout()
-            return 0
-
-        message_uids = messages[0].split()
-        if not message_uids:
-            mail.close()
-            return 0
         
-        # Process emails in small batches for better performance
-        # OVH's IMAP server works with quoted folder names and small batches
-        batch_size = 50  # Process 10 emails at a time
-        total_copied = 0
-        
-        for batch_start in range(0, len(message_uids), batch_size):
-            batch_uids = message_uids[batch_start:batch_start + batch_size]
-            batch_num = batch_start // batch_size + 1
-            total_batches = (len(message_uids) + batch_size - 1) // batch_size
-            
-            print(f"Processing batch {batch_num} of {total_batches} ({len(batch_uids)} emails)...")
-            
-            # Decode UIDs
-            uid_strings = [uid.decode() for uid in batch_uids]
-            uid_list = ','.join(uid_strings)
-            
-            # Batch fetch sequence numbers for all UIDs in this batch
-            result, data = mail.uid("FETCH", uid_list, "(UID)")
-            if result != "OK":
-                mail.close()
-                raise Exception(f"Failed to fetch sequence numbers for batch: {result}")
-            
-            # Parse sequence numbers from FETCH response
-            # Format: b'1 (UID 12345)', b'2 (UID 12346)', etc.
-            seq_nums = []
-            for item in data:
-                if isinstance(item, tuple):
-                    # Skip the data part, we only need the header
-                    continue
-                if isinstance(item, bytes):
-                    # Parse: b'1 (UID 12345)'
-                    parts = item.decode().split()
-                    if parts:
-                        seq_nums.append(parts[0])
-            
-            if len(seq_nums) != len(batch_uids):
-                mail.close()
-                raise Exception(f"Mismatch: got {len(seq_nums)} sequence numbers for {len(batch_uids)} UIDs")
-            
-            # Batch COPY: try copying all at once, fall back to individual if needed
-            seq_list = ','.join(seq_nums)
-            result, response = mail.copy(seq_list, self.bin_folder)
-            
-            if result != "OK":
-                # Fall back to individual copies if batch fails
-                print("Batch COPY failed, falling back to individual copies...")
-                for seq_num, uid in zip(seq_nums, uid_strings):
-                    result, response = mail.copy(seq_num, self.bin_folder)
-                    if result != "OK":
-                        mail.close()
-                        raise Exception(f"Failed to copy email UID {uid} (seq {seq_num}) to {self.bin_folder}: {result} {response}")
-            
-            # Batch STORE: mark all as deleted at once
-            result, response = mail.uid("STORE", uid_list, '+FLAGS', '\\Deleted')
-            if result != "OK":
-                mail.close()
-                raise Exception(f"Failed to mark emails as deleted: {result} {response}")
-            
-            total_copied += len(batch_uids)
-            
-            # Expunge every 50 emails to keep memory usage down
-            if total_copied % 50 == 0:
-                try:
-                    mail.expunge()
-                except Exception as e:
-                    # If expunge fails, continue - we'll expunge at the end
-                    print(f"Warning: Expunge failed at {total_copied} emails: {e}")
-        
-        # Final expunge at the end
         try:
-            mail.expunge()
-        except Exception as e:
-            print(f"Warning: Final expunge failed: {e}")
+            mail.select("INBOX", readonly=False)
+            # Use UID SEARCH to get UIDs (which remain stable after deletions)
+            _, messages = mail.uid("SEARCH", None, f'FROM "{sender_email}"')
+            if not messages[0]:
+                return 0
 
-        mail.close()
-        return total_copied
+            message_uids = messages[0].split()
+            if not message_uids:
+                return 0
+            
+            total_copied = self._delete_message_uids(mail, message_uids)
+            return total_copied
+        finally:
+            mail.close()
+
+    def delete_emails_older_than(self, foldername: str, days_ago: int) -> int:
+        """
+        Delete emails older than a specified number of days from a given folder.
+        
+        Args:
+            foldername: The name of the folder to search in (e.g., "INBOX")
+            days_ago: Number of days ago as threshold (e.g., 30 means delete emails older than 30 days)
+        
+        Returns:
+            The number of emails moved to the bin.
+        """
+        if days_ago < 0:
+            raise ValueError("days_ago must be a non-negative integer")
+        
+        # Calculate the threshold date
+        threshold_date = datetime.now() - timedelta(days=days_ago)
+        # Format date for IMAP: DD-MMM-YYYY (e.g., "01-Jan-2024")
+        imap_date = threshold_date.strftime("%d-%b-%Y")
+        
+        # Format folder name: quote if it has spaces (for OVH and similar servers)
+        formatted_foldername = foldername
+        if ' ' in foldername:
+            formatted_foldername = f'"{foldername}"'
+        
+        mail = self.connect()
+        selected = False
+        
+        try:
+            mail.select(formatted_foldername, readonly=False)
+            selected = True
+            # Use UID SEARCH with SENTBEFORE to find messages older than the threshold date
+            _, messages = mail.uid("SEARCH", None, f'SENTBEFORE "{imap_date}"')
+            if not messages[0]:
+                return 0
+            
+            message_uids = messages[0].split()
+            if not message_uids:
+                return 0
+            
+            total_copied = self._delete_message_uids(mail, message_uids)
+            return total_copied
+        finally:
+            # Use close() only if we successfully selected a folder, otherwise use logout()
+            if selected:
+                try:
+                    mail.close()
+                except Exception:
+                    mail.logout()
+            else:
+                mail.logout()
 

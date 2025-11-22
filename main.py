@@ -9,7 +9,7 @@ from cleanmail.styling import apply_custom_styles
 
 def analyze_emails_component(analyzer):
     max_batches = st.number_input(
-        "Max Batches to Analyze (500 emails per batch)",
+        "Limit number of Batches to Analyze (500 emails per batch)",
         min_value=1,
         value=None,
         step=1,
@@ -128,17 +128,149 @@ def sender_list_for_cleanup_component():
                 st.rerun()
 
 
-def email_cleanup_component():
+def inbox_cleanup_component():
     analyzer = MailAnalyzer(
         st.session_state.email_address, st.session_state.mail_password, st.session_state.server
     )
     # Show "Analyze Emails" button only if sender_stats is not populated
     if st.session_state.email_data is None:
+        st.markdown("""
+        ### Inbox Cleanup
+
+        This tool will **analyze your inbox** and show you a list of senders along with the number of emails from each.
+
+        1. **Select** the senders you'd like to clean up by checking the box next to their email address.
+        2. Click **'Clean Selected Emails'** to move all emails from the selected senders to the bin.
+
+        🚨 *This process might take some time depending on your inbox size. Please be patient!*
+
+        After cleanup:
+        - The app will refresh and show you the updated list of senders.
+        - You can repeat the process to clean up more emails, or reset the app to start over.
+        """)
+
         analyze_emails_component(analyzer)
         return
 
     sender_list_for_cleanup_component()
 
+
+def folder_pruning_component():
+    """Component for folder pruning functionality."""
+    st.markdown("""
+    ### Folder Pruning
+    
+    This tool will help you manage and prune email folders by deleting old messages.
+    
+    1. **View** all your folders and the number of messages in each.
+    2. **Select** a folder and choose how old messages should be (30, 90, 150, 365, or 730 days).
+    3. Click the pruning button to delete emails older than the selected threshold.
+    
+    🚨 *This process might take some time depending on the number of emails. Please be patient!*
+    """)
+    
+    if not (st.session_state.email_address and st.session_state.mail_password and st.session_state.server):
+        st.info("Please authenticate using your credentials in the sidebar to use this feature.")
+        return
+    
+    analyzer = MailAnalyzer(
+        st.session_state.email_address, st.session_state.mail_password, st.session_state.server
+    )
+    
+    # Get list of folders
+    if st.button("🔄 Refresh Folder List", use_container_width=True):
+        st.rerun()
+    
+    try:
+        with st.spinner("Loading folders..."):
+            folders = analyzer.get_all_folders()
+        
+        if not folders:
+            st.warning("No folders found.")
+            return
+        
+        # Sort folders by message count (descending)
+        folders = sorted(folders, key=lambda x: x['message_count'], reverse=True)
+        
+        st.markdown("#### Folders and Pruning Actions")
+                
+        # Create table header using columns
+        header_cols = st.columns([5, 1, 5])
+        with header_cols[0]:
+            st.markdown("**Folder Name**")
+        with header_cols[1]:
+            st.markdown("**Messages**")
+        with header_cols[2]:
+            st.markdown("**Prune Messages older than:**")
+        
+        st.markdown("---")
+        
+        # Create table rows with dropdowns and buttons in the same row
+        for idx, folder in enumerate(folders):
+            folder_name = folder['printable_name']
+            message_count = folder['message_count']
+            
+            # Create columns for this row: folder name, count, and prune dropdown
+            cols = st.columns([5,1,5])
+            
+            # First column: Folder name
+            with cols[0]:
+                st.markdown(folder_name)
+            
+            # Second column: Message count
+            with cols[1]:
+                st.markdown(f"`{message_count}`")
+            
+            # Third column: Dropdown and button
+            with cols[2]:
+                prune_folder_fragment(analyzer, folder['raw_name'], folder_name)
+            # Add a subtle divider between rows (optional)
+            if idx < len(folders) - 1:
+                st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
+    
+    except Exception as e:
+        st.error(f"Error loading folders: {e}")
+        st.toast(f"Failed to load folders: {e}")
+        print(f"Error loading folders: {e}")
+
+@st.fragment
+def prune_folder_fragment(analyzer: MailAnalyzer, folder_raw_name: str, folder_display_name: str):
+    """Fragment for pruning buttons in a folder row."""
+    container = st.container(horizontal=True, horizontal_alignment="left")
+    
+    # Define days options
+    days_options = [30, 90, 150, 365, 730]
+    
+    for days in days_options:
+        button_key = f"action_{folder_raw_name}_{days}"
+        if container.button(f"{days} d", key=button_key):
+            st.info(f"Pruning emails older than {days} days from '{folder_display_name}'...")
+            st.toast(f"Pruning emails older than {days} days. This may take a while...")
+            
+            try:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                status_text.markdown(f"Deleting emails older than {days} days...")
+                
+                deleted_count = analyzer.delete_emails_older_than(folder_raw_name, days)
+                
+                progress_bar.progress(1.0)
+                status_text.empty()
+                progress_bar.empty()
+                
+                if deleted_count > 0:
+                    st.success(f"Successfully deleted {deleted_count} emails older than {days} days from '{folder_display_name}'!")
+                    st.toast(f"Deleted {deleted_count} emails!")
+                else:
+                    st.info(f"No emails found older than {days} days in '{folder_display_name}'.")
+                
+                # Refresh the folder list to show updated counts
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"Error pruning emails: {e}")
+                st.toast(f"Failed to prune emails: {e}")
+                print(f"Error pruning emails from {folder_display_name}: {e}")
 
 def sidebar_component():
     st.sidebar.header("Authentication")
@@ -244,17 +376,16 @@ def main():
     # Sidebar for authentication
     sidebar_component()
 
-    # Title row with refresh button
-    title_col, reset_col = st.columns([7, 1])
-    with title_col:
-        st.title("CleanMail")
-    with reset_col:
-        if st.button("🔄 Reset", use_container_width=True):
-            st.session_state.email_data = None
-            st.rerun()
 
     if st.session_state.email_address and st.session_state.mail_password and st.session_state.server:
-        email_cleanup_component()
+        # Create tabs for different functionalities
+        tab1, tab2 = st.tabs(["Inbox Cleanup", "Folder Pruning"])
+        
+        with tab1:
+            inbox_cleanup_component()
+        
+        with tab2:
+            folder_pruning_component()
     else:
         st.info("Please authenticate using your credentials in the sidebar.")
         st.markdown(
