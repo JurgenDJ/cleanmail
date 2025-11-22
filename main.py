@@ -8,6 +8,15 @@ from email_validator import EmailValidator, EmailValidationError
 
 
 def analyze_emails_component(analyzer):
+    max_batches = st.number_input(
+        "Max Batches to Analyze (500 emails per batch)",
+        min_value=1,
+        value=None,
+        step=1,
+        help="Optional: Limit the number of batches to analyze. Leave empty to analyze all emails.",
+        key="max_batches_input"
+    )
+    
     if st.button("Analyze Emails"):
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -31,7 +40,8 @@ def analyze_emails_component(analyzer):
             )
 
         st.session_state.email_data = analyzer.get_sender_statistics(
-            progress_callback=update_progress
+            progress_callback=update_progress,
+            max_batches=max_batches if max_batches else None
         )
 
         progress_bar.empty()

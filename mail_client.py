@@ -86,8 +86,16 @@ class MailAnalyzer:
         """Split an array into chunks of a specified size."""
         return [array[i : i + chunk_size] for i in range(0, len(array), chunk_size)]
 
-    def get_sender_statistics(self, progress_callback=None) -> pd.DataFrame:
-        """Analyze recent emails and return a DataFrame with sender information"""
+    def get_sender_statistics(self, progress_callback=None, max_batches: Optional[int] = None) -> pd.DataFrame:
+        """Analyze recent emails and return a DataFrame with sender information
+        
+        Args:
+            progress_callback: Optional callback function for progress updates
+            max_batches: Optional limit on the number of batches (500 mails per batch) to analyze. If None, all batches are processed.
+        
+        Returns:
+            DataFrame with sender statistics
+        """
         mail = self.connect()
 
         mail.select("INBOX")
@@ -96,11 +104,19 @@ class MailAnalyzer:
         message_ids = messages[0].split()
 
         sender_data = {}
-        total_messages = len(message_ids)
-
         batch_size = 500
+        
+        # Calculate total messages, capping at max_batches * batch_size if max_batches is set
+        if max_batches is not None:
+            total_messages = min(len(message_ids), max_batches * batch_size)
+        else:
+            total_messages = len(message_ids)
         processed_messages = 0
+        batch_count = 0
         for batch_ids in self.chunk(message_ids, batch_size):
+            if max_batches is not None and batch_count >= max_batches:
+                break
+            batch_count += 1
             if progress_callback:
                 processed_messages += len(batch_ids)
                 progress_callback(processed_messages, total_messages)
