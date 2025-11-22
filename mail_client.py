@@ -7,12 +7,28 @@ from typing import Optional, List, Any
 
 import pandas as pd
 
+from email_validator import EmailValidator, EmailValidationError
+
 
 class MailAnalyzer:
-    def __init__(self, email_address, app_password):
+    def __init__(self, email_address, mail_password, mail_server):
         self.email_address = email_address
-        self.app_password = app_password
+        self.mail_password = mail_password
+        self.mail_server = mail_server
         self.bin_folder = self.__determine_bin_folder()
+
+    @staticmethod
+    def _print_folder_list(folders: List[bytes]) -> None:
+        """Print a readable list of folder names from IMAP folder list."""
+        folder_names = []
+        for folder in folders:
+            decoded_folder = folder.decode()
+            folder_name = decoded_folder.split(' "/" ')[-1].strip('"')
+            folder_names.append(folder_name)
+        
+        print("Could not find Bin or Trash folder. Available folders:")
+        for folder_name in folder_names:
+            print(f"  - {folder_name}")
 
     def __determine_bin_folder(self) -> str:
         mail = self.connect()
@@ -38,29 +54,31 @@ class MailAnalyzer:
                 "[Gmail]/Trash",
                 "[Yahoo]/Bin",
                 "[Yahoo]/Trash",
+                "Deleted Items",
             ]:
                 return folder_name
 
+        self._print_folder_list(folders)
         raise Exception("Could not find Bin or Trash folder")
 
-    def __get_imap_url(self) -> str:
-        endpoints = {
-            "yahoo.com": "imap.mail.yahoo.com",
-            "gmail.com": "imap.gmail.com",
-        }
-        # Extract domain from email address
-        domain = self.email_address.lower().split("@")[-1]
+    # def __get_imap_url(self) -> str:
+    #     endpoints = {
+    #         "yahoo.com": "imap.mail.yahoo.com",
+    #         "gmail.com": "imap.gmail.com",
+    #     }
+    #     # Extract domain from email address
+    #     domain = self.email_address.lower().split("@")[-1]
 
-        # Match domain to known IMAP endpoints
-        if domain in endpoints:
-            return endpoints[domain]
-        else:
-            raise ValueError(f"Unsupported email domain: {domain}")
+    #     # Match domain to known IMAP endpoints
+    #     if domain in endpoints:
+    #         return endpoints[domain]
+    #     else:
+    #         raise ValueError(f"Unsupported email domain: {domain}")
 
     def connect(self) -> imaplib.IMAP4_SSL:
         """Create a fresh IMAP connection"""
-        mail = imaplib.IMAP4_SSL(self.__get_imap_url())
-        mail.login(self.email_address, self.app_password)
+        mail = imaplib.IMAP4_SSL(self.mail_server)
+        mail.login(self.email_address, self.mail_password)
         return mail
 
     @staticmethod
@@ -156,6 +174,22 @@ class MailAnalyzer:
             return None
 
     def delete_emails_from_sender(self, sender_email) -> int:
+        """
+        Delete emails from a specific sender by moving them to the bin folder.
+        
+        Args:
+            sender_email: The email address of the sender. This is validated
+                         to prevent IMAP command injection.
+        
+        Returns:
+            The number of emails moved to the bin.
+            
+        Raises:
+            EmailValidationError: If the sender_email is invalid or unsafe.
+        """
+        # Validate email address to prevent IMAP command injection
+        sender_email = EmailValidator.validate_email_for_imap(sender_email)
+        
         mail = self.connect()
 
         mail.select("INBOX", readonly=False)

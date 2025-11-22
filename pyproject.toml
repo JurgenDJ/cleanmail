@@ -4,4 +4,9 @@ version = "0.1.0"
 description = "A tool to quickly clean up your email inbox!"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["beautifulsoup4>=4.12.3", "pandas>=2.2.3", "streamlit>=1.39.0"]
+dependencies = [
+    "beautifulsoup4>=4.12.3",
+    "pandas>=2.2.3",
+    "streamlit>=1.39.0",
+    "python-dotenv==1.0.0"
+]
