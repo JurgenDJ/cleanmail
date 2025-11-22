@@ -7,7 +7,7 @@ from typing import Optional, List, Any
 
 import pandas as pd
 
-from email_validator import EmailValidator, EmailValidationError
+from cleanmail.email_validator import EmailValidator, EmailValidationError
 
 
 class MailAnalyzer:
@@ -298,3 +298,4 @@ class MailAnalyzer:
 
         mail.close()
         return total_copied
+

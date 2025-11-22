@@ -3,9 +3,8 @@ import os
 
 import streamlit as st
 from dotenv import load_dotenv
-from mail_client import MailAnalyzer
-from email_validator import EmailValidator, EmailValidationError
-from styling import apply_custom_styles
+from cleanmail import MailAnalyzer, EmailValidator, EmailValidationError
+from cleanmail.styling import apply_custom_styles
 
 
 def analyze_emails_component(analyzer):
