@@ -5,6 +5,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from mail_client import MailAnalyzer
 from email_validator import EmailValidator, EmailValidationError
+from styling import apply_custom_styles
 
 
 def analyze_emails_component(analyzer):
@@ -221,6 +222,9 @@ def sidebar_component():
 
 def main():
     st.set_page_config(page_title="CleanMail", layout="wide")
+    
+    # Apply custom styles globally (must be called early)
+    apply_custom_styles()
 
     # Load defaults from .env file if it exists
     load_dotenv()
