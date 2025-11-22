@@ -39,6 +39,7 @@ class MailAnalyzer:
         if result != "OK":
             raise Exception("Could not list folders")
 
+
         for folder in folders:
             # Decode the folder
             decoded_folder = folder.decode()
@@ -56,24 +57,25 @@ class MailAnalyzer:
                 "[Yahoo]/Trash",
                 "Deleted Items",
             ]:
+                # For OVH and servers with spaces in folder names, we need to quote it
+                # Extract the quoted mailbox name from LIST response
+                import re
+                # Match the quoted mailbox name at the end
+                match = re.search(r'"([^"]+)"\s*$', decoded_folder)
+                if match:
+                    # Return quoted version for OVH compatibility
+                    full_path = match.group(1)
+                    # If folder name has spaces, return it quoted (OVH requires this)
+                    if ' ' in full_path:
+                        return f'"{full_path}"'
+                    return full_path
+                # Fallback: quote if it has spaces
+                if ' ' in folder_name:
+                    return f'"{folder_name}"'
                 return folder_name
 
         self._print_folder_list(folders)
         raise Exception("Could not find Bin or Trash folder")
-
-    # def __get_imap_url(self) -> str:
-    #     endpoints = {
-    #         "yahoo.com": "imap.mail.yahoo.com",
-    #         "gmail.com": "imap.gmail.com",
-    #     }
-    #     # Extract domain from email address
-    #     domain = self.email_address.lower().split("@")[-1]
-
-    #     # Match domain to known IMAP endpoints
-    #     if domain in endpoints:
-    #         return endpoints[domain]
-    #     else:
-    #         raise ValueError(f"Unsupported email domain: {domain}")
 
     def connect(self) -> imaplib.IMAP4_SSL:
         """Create a fresh IMAP connection"""
@@ -209,13 +211,90 @@ class MailAnalyzer:
         mail = self.connect()
 
         mail.select("INBOX", readonly=False)
+        # Use UID SEARCH to get UIDs (which remain stable after deletions)
         _, messages = mail.uid("SEARCH", None, f'FROM "{sender_email}"')
         if not messages[0]:
             mail.logout()
             return 0
 
         message_uids = messages[0].split()
-        mail.uid("COPY", b",".join(message_uids).decode("utf-8"), self.bin_folder)
+        if not message_uids:
+            mail.close()
+            return 0
+        
+        # Process emails in small batches for better performance
+        # OVH's IMAP server works with quoted folder names and small batches
+        batch_size = 50  # Process 10 emails at a time
+        total_copied = 0
+        
+        for batch_start in range(0, len(message_uids), batch_size):
+            batch_uids = message_uids[batch_start:batch_start + batch_size]
+            batch_num = batch_start // batch_size + 1
+            total_batches = (len(message_uids) + batch_size - 1) // batch_size
+            
+            print(f"Processing batch {batch_num} of {total_batches} ({len(batch_uids)} emails)...")
+            
+            # Decode UIDs
+            uid_strings = [uid.decode() for uid in batch_uids]
+            uid_list = ','.join(uid_strings)
+            
+            # Batch fetch sequence numbers for all UIDs in this batch
+            result, data = mail.uid("FETCH", uid_list, "(UID)")
+            if result != "OK":
+                mail.close()
+                raise Exception(f"Failed to fetch sequence numbers for batch: {result}")
+            
+            # Parse sequence numbers from FETCH response
+            # Format: b'1 (UID 12345)', b'2 (UID 12346)', etc.
+            seq_nums = []
+            for item in data:
+                if isinstance(item, tuple):
+                    # Skip the data part, we only need the header
+                    continue
+                if isinstance(item, bytes):
+                    # Parse: b'1 (UID 12345)'
+                    parts = item.decode().split()
+                    if parts:
+                        seq_nums.append(parts[0])
+            
+            if len(seq_nums) != len(batch_uids):
+                mail.close()
+                raise Exception(f"Mismatch: got {len(seq_nums)} sequence numbers for {len(batch_uids)} UIDs")
+            
+            # Batch COPY: try copying all at once, fall back to individual if needed
+            seq_list = ','.join(seq_nums)
+            result, response = mail.copy(seq_list, self.bin_folder)
+            
+            if result != "OK":
+                # Fall back to individual copies if batch fails
+                print("Batch COPY failed, falling back to individual copies...")
+                for seq_num, uid in zip(seq_nums, uid_strings):
+                    result, response = mail.copy(seq_num, self.bin_folder)
+                    if result != "OK":
+                        mail.close()
+                        raise Exception(f"Failed to copy email UID {uid} (seq {seq_num}) to {self.bin_folder}: {result} {response}")
+            
+            # Batch STORE: mark all as deleted at once
+            result, response = mail.uid("STORE", uid_list, '+FLAGS', '\\Deleted')
+            if result != "OK":
+                mail.close()
+                raise Exception(f"Failed to mark emails as deleted: {result} {response}")
+            
+            total_copied += len(batch_uids)
+            
+            # Expunge every 50 emails to keep memory usage down
+            if total_copied % 50 == 0:
+                try:
+                    mail.expunge()
+                except Exception as e:
+                    # If expunge fails, continue - we'll expunge at the end
+                    print(f"Warning: Expunge failed at {total_copied} emails: {e}")
+        
+        # Final expunge at the end
+        try:
+            mail.expunge()
+        except Exception as e:
+            print(f"Warning: Final expunge failed: {e}")
 
         mail.close()
-        return len(message_uids)
+        return total_copied

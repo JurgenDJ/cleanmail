@@ -120,8 +120,10 @@ def sender_list_for_cleanup_component():
                     except EmailValidationError as e:
                         st.error(f"Invalid email address '{sender}': {e}")
                         st.toast(f"Skipped invalid email address: {sender}")
+                        print(f"Invalid email address '{sender}': {e}")
                     except Exception as e:
                         st.error(f"Error deleting emails from {sender}: {e}")
+                        print(f"Error deleting emails from {sender}: {e}")
                         st.toast(f"Failed to delete emails from {sender}")
                 st.session_state.email_data = None
                 st.rerun()
@@ -252,7 +254,7 @@ def main():
             st.session_state.email_data = None
             st.rerun()
 
-    if st.session_state.email_address and st.session_state.mail_password:
+    if st.session_state.email_address and st.session_state.mail_password and st.session_state.server:
         email_cleanup_component()
     else:
         st.info("Please authenticate using your credentials in the sidebar.")
