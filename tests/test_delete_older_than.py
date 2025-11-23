@@ -15,7 +15,7 @@ from cleanmail import MailAnalyzer
 
 
 def main():
-    """Test the MailAnalyzer delete_emails_older_than functionality."""
+    """Test the MailAnalyzer prone_emails_older_than functionality."""
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
         description="Test script for MailAnalyzer - delete emails older than a specified number of days"
@@ -99,7 +99,7 @@ def main():
         print("This may take a while depending on the number of emails...")
         print()
         
-        deleted_count = analyzer.delete_emails_older_than(test_foldername, test_days_ago)
+        deleted_count = analyzer.prone_emails_older_than(test_foldername, test_days_ago, action="delete")
         
         print()
         print("=" * 60)

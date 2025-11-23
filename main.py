@@ -142,11 +142,7 @@ def inbox_cleanup_component():
         1. **Select** the senders you'd like to clean up by checking the box next to their email address.
         2. Click **'Clean Selected Emails'** to move all emails from the selected senders to the bin.
 
-        🚨 *This process might take some time depending on your inbox size. Please be patient!*
-
-        After cleanup:
-        - The app will refresh and show you the updated list of senders.
-        - You can repeat the process to clean up more emails, or reset the app to start over.
+        🚨 *This process might take some time depending on your inbox size. you can limit the number of batches to analyze.*
         """)
 
         analyze_emails_component(analyzer)
@@ -155,58 +151,169 @@ def inbox_cleanup_component():
     sender_list_for_cleanup_component()
 
 
-def folder_pruning_component():
-    """Component for folder pruning functionality."""
-    st.markdown("""
-    ### Folder Pruning
-    
-    This tool will help you manage and prune email folders by deleting old messages.
-    
-    1. **View** all your folders and the number of messages in each.
-    2. **Select** a folder and choose how old messages should be (30, 90, 150, 365, or 730 days).
-    3. Click the pruning button to delete emails older than the selected threshold.
-    
-    🚨 *This process might take some time depending on the number of emails. Please be patient!*
-    """)
-    
+def trash_bin_component():
+    """Component for trash bin management functionality."""
     if not (st.session_state.email_address and st.session_state.mail_password and st.session_state.server):
         st.info("Please authenticate using your credentials in the sidebar to use this feature.")
         return
-    
+
     analyzer = MailAnalyzer(
         st.session_state.email_address, st.session_state.mail_password, st.session_state.server
     )
+
+    # Get unquoted bin folder name for count_messages()
+    bin_folder_unquoted = analyzer.bin_folder.strip('"')
     
-    # Get list of folders
-    if st.button("🔄 Refresh Folder List", use_container_width=True):
-        st.rerun()
+    # Get message count in trash bin
+    try:
+        trash_count = analyzer.count_messages(bin_folder_unquoted)
+    except Exception as e:
+        trash_count = 0
+        st.warning(f"Could not retrieve trash bin message count: {e}")
+
+    st.markdown(f"""
+    ### Trash Bin Management
+    
+    This tool allows you to permanently delete all emails in your trash/bin folder.
+    
+    **Current trash bin:** {trash_count} message{'s' if trash_count != 1 else ''}
+    
+    ⚠️ **Warning:** This action cannot be undone! All emails in the trash bin will be permanently deleted.
+    """)
+    
+    if st.button("🗑️ Empty Trash Bin", use_container_width=True, type="primary"):
+        st.warning("⚠️ This will permanently delete all emails in your trash bin. This action cannot be undone!")
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        try:
+            def update_progress(current, total):
+                progress = current / total if total > 0 else 0
+                progress_bar.progress(progress)
+                status_text.markdown(
+                    f"""
+                    Deleting email {current}/{total}
+                    """
+                )
+            
+            deleted_count = analyzer.empty_bin_folder(progress_callback=update_progress)
+            
+            if deleted_count > 0:
+                st.success(f"Successfully deleted {deleted_count} emails from the trash bin!")
+                st.toast(f"Deleted **{deleted_count}** emails from trash bin!")
+                st.rerun()
+            else:
+                st.info("The trash bin is already empty.")
+        except Exception as e:
+            st.error(f"Error emptying trash bin: {e}")
+            st.toast(f"Failed to empty trash bin: {e}")
+            print(f"Error emptying trash bin: {e}")
+        finally:
+            progress_bar.empty()
+            status_text.empty()
+
+
+def load_folders(analyzer):
+    """Load folders and store in session state."""
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     
     try:
-        with st.spinner("Loading folders..."):
-            folders = analyzer.get_all_folders()
+        def update_progress(current, total):
+            progress = current / total if total > 0 else 0
+            progress_bar.progress(progress)
+            status_text.markdown(
+                f"""
+                Counting messages in folder {current}/{total}
+                """
+            )
         
-        if not folders:
-            st.warning("No folders found.")
-            return
+        folders = analyzer.get_all_folders(progress_callback=update_progress)
         
-        # Sort folders by message count (descending)
-        folders = sorted(folders, key=lambda x: x['message_count'], reverse=True)
+        if folders:
+            # Sort folders by message count (descending)
+            folders = sorted(folders, key=lambda x: x['message_count'], reverse=True)
+            st.session_state.folders = folders
+        else:
+            st.session_state.folders = []
+    except Exception as e:
+        st.error(f"Error loading folders: {e}")
+        st.toast(f"Failed to load folders: {e}")
+        print(f"Error loading folders: {e}")
+        st.session_state.folders = []
+    finally:
+        progress_bar.empty()
+        status_text.empty()
+
+
+def folder_pruning_component():
+    """Component for folder pruning functionality."""
+    if not (st.session_state.email_address and st.session_state.mail_password and st.session_state.server):
+        st.info("Please authenticate using your credentials in the sidebar to use this feature.")
+        return
+
+    analyzer = MailAnalyzer(
+        st.session_state.email_address, st.session_state.mail_password, st.session_state.server
+    )
+
+    col1, col2 = st.columns([1,1])
+    with col1:
+        st.markdown("""
+        ### Folder Pruning
         
-        st.markdown("#### Folders and Pruning Actions")
-                
-        # Create table header using columns
-        header_cols = st.columns([5, 1, 5])
-        with header_cols[0]:
-            st.markdown("**Folder Name**")
-        with header_cols[1]:
-            st.markdown("**Messages**")
-        with header_cols[2]:
-            st.markdown("**Prune Messages older than:**")
+        This tool will help you manage and prune email folders by deleting old messages.
         
-        st.markdown("---")
-        
-        # Create table rows with dropdowns and buttons in the same row
-        for idx, folder in enumerate(folders):
+        """
+        )
+    with col2:
+        # Get list of folders
+        if st.button("🔄 Refresh Folder List", use_container_width=True):
+            load_folders(analyzer)
+            st.rerun()
+        prune_action = st.selectbox(
+            "Choose what to do with pruned emails:",
+            options=["Delete", "Move to Archive"],
+            key="prune_action_selectbox"
+        )
+        st.session_state.prune_action = prune_action
+        st.write(f'Pruning emails will be moved to: {analyzer.bin_folder if prune_action == "Delete" else analyzer.archive_folder}')
+    
+    # Initialize folders in session state if not present
+    if 'folders' not in st.session_state:
+        st.session_state.folders = None
+    
+    # Get folders from session state
+    folders = st.session_state.folders
+    
+    if folders is None:
+        st.info("Click 'Refresh Folder List' to load folders.")
+        return
+    
+    if not folders:
+        st.warning("No folders found.")
+        return
+    
+    st.markdown("#### Folders and Pruning Actions")
+            
+    # Create table header using columns
+    header_cols = st.columns([5, 1, 5])
+    with header_cols[0]:
+        st.markdown("**Folder Name**")
+    with header_cols[1]:
+        st.markdown("**Messages**")
+    with header_cols[2]:
+        st.markdown("**Prune Messages older than:**")
+    
+    st.markdown("---")
+    
+    # Create table rows with dropdowns and buttons in the same row
+    for idx, folder in enumerate(folders):
+            if folder['printable_name'] == analyzer.archive_folder and st.session_state.prune_action == "Move to Archive":
+                continue
+            if folder['printable_name'] == analyzer.bin_folder:
+                continue
+
             folder_name = folder['printable_name']
             message_count = folder['message_count']
             
@@ -227,16 +334,26 @@ def folder_pruning_component():
             # Add a subtle divider between rows (optional)
             if idx < len(folders) - 1:
                 st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
-    
-    except Exception as e:
-        st.error(f"Error loading folders: {e}")
-        st.toast(f"Failed to load folders: {e}")
-        print(f"Error loading folders: {e}")
 
 @st.fragment
 def prune_folder_fragment(analyzer: MailAnalyzer, folder_raw_name: str, folder_display_name: str):
     """Fragment for pruning buttons in a folder row."""
     container = st.container(horizontal=True, horizontal_alignment="left")
+    
+    # Get the prune action from session state (default to "Delete" if not set)
+    prune_action = st.session_state.get("prune_action", "Delete")
+    
+    # Map UI action to method action parameter
+    action_map = {
+        "Delete": "delete",
+        "Move to Archive": "archive"
+    }
+    action = action_map.get(prune_action, "delete")
+    
+    # Define action verbs for messages
+    action_verb = "Deleting" if action == "delete" else "Archiving"
+    action_past_verb = "deleted" if action == "delete" else "archived"
+    action_noun = "deleted" if action == "delete" else "moved to archive"
     
     # Define days options
     days_options = [30, 90, 150, 365, 730]
@@ -247,20 +364,29 @@ def prune_folder_fragment(analyzer: MailAnalyzer, folder_raw_name: str, folder_d
             st.info(f"Pruning emails older than {days} days from '{folder_display_name}'...")
             st.toast(f"Pruning emails older than {days} days. This may take a while...")
             
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
             try:
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                status_text.markdown(f"Deleting emails older than {days} days...")
+                def update_progress(current, total):
+                    progress = current / total if total > 0 else 0
+                    progress_bar.progress(progress)
+                    status_text.markdown(
+                        f"""
+                        {action_verb} email {current}/{total}
+                        """
+                    )
                 
-                deleted_count = analyzer.delete_emails_older_than(folder_raw_name, days)
+                processed_count = analyzer.prone_emails_older_than(
+                    folder_raw_name, 
+                    days, 
+                    action=action,
+                    progress_callback=update_progress
+                )
                 
-                progress_bar.progress(1.0)
-                status_text.empty()
-                progress_bar.empty()
-                
-                if deleted_count > 0:
-                    st.success(f"Successfully deleted {deleted_count} emails older than {days} days from '{folder_display_name}'!")
-                    st.toast(f"Deleted {deleted_count} emails!")
+                if processed_count > 0:
+                    st.success(f"Successfully {action_past_verb} {processed_count} emails older than {days} days from '{folder_display_name}'!")
+                    st.toast(f"{processed_count} emails {action_noun}!")
                 else:
                     st.info(f"No emails found older than {days} days in '{folder_display_name}'.")
                 
@@ -271,6 +397,9 @@ def prune_folder_fragment(analyzer: MailAnalyzer, folder_raw_name: str, folder_d
                 st.error(f"Error pruning emails: {e}")
                 st.toast(f"Failed to prune emails: {e}")
                 print(f"Error pruning emails from {folder_display_name}: {e}")
+            finally:
+                progress_bar.empty()
+                status_text.empty()
 
 def sidebar_component():
     st.sidebar.header("Authentication")
@@ -356,9 +485,6 @@ def sidebar_component():
 def main():
     st.set_page_config(page_title="CleanMail", layout="wide")
     
-    # Apply custom styles globally (must be called early)
-    apply_custom_styles()
-
     # Load defaults from .env file if it exists
     load_dotenv()
     
@@ -379,13 +505,16 @@ def main():
 
     if st.session_state.email_address and st.session_state.mail_password and st.session_state.server:
         # Create tabs for different functionalities
-        tab1, tab2 = st.tabs(["Inbox Cleanup", "Folder Pruning"])
+        tab1, tab2, tab3 = st.tabs(["Inbox Cleanup", "Folder Pruning", "Trash Bin"])
         
         with tab1:
             inbox_cleanup_component()
         
         with tab2:
             folder_pruning_component()
+        
+        with tab3:
+            trash_bin_component()
     else:
         st.info("Please authenticate using your credentials in the sidebar.")
         st.markdown(

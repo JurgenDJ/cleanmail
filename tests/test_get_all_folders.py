@@ -98,7 +98,7 @@ def main():
         
         print()
         print("=" * 80)
-        print("Note: Raw names can be used with delete_emails_older_than() method")
+        print("Note: Raw names can be used with prone_emails_older_than() method")
         print("=" * 80)
         
     except Exception as e:

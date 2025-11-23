@@ -12,3 +12,4 @@ In this stage, there are no fixes are improvements yet.
 - Changed the system to work with any Imap server, not limited to yahoo or google
 - Added ability to save server/mailaddress and pwd
 - add feature to prune folder (delete messages older than ...)
+- added feature to prune to archive (as alternative to prune to deleted items)
