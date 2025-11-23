@@ -17,3 +17,6 @@ dependencies = [
 
 [tool.hatchling.build.targets.wheel]
 packages = ["cleanmail"]
+
+[project.scripts]
+start = "app:start"
